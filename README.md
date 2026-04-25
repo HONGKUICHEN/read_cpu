@@ -57,30 +57,46 @@ CSV 和 JSONL 都包含这些字段：
 - `swap_used_kb`
 - `swap_used_percent`
 
+## 写盘方式
+
+监控窗口内的数据先缓存在内存里：
+
+- 采样过程中不会持续写磁盘
+- 等窗口结束后一次性写出
+- 最终生成：
+  - `logs/YYYY-MM-DD.csv`
+  - `logs/YYYY-MM-DD.jsonl`
+
+## Ubuntu 一键运行
+
+在全新的 Ubuntu / WSL Ubuntu 上，直接执行：
+
+```bash
+cd read_cpu
+bash install_ubuntu.sh
+```
+
+这个脚本会：
+
+- 安装 `python3`
+- 生成 `systemd --user` service 文件
+- 启动并设置开机自启
+
+如果你只想直接前台运行：
+
+```bash
+cd read_cpu
+bash run.sh
+```
+
 ## 推荐部署
 
 ### 方案 1：systemd user service
 
-新建 `~/.config/systemd/user/read_cpu.service`：
-
-```ini
-[Unit]
-Description=Daily UTC midnight CPU and memory monitor
-
-[Service]
-Type=simple
-WorkingDirectory=/absolute/path/to/read_cpu
-ExecStart=/usr/bin/python3 /absolute/path/to/read_cpu/monitor.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-启用：
+自动生成：
 
 ```bash
+python3 monitor.py --service-file ~/.config/systemd/user/read_cpu.service
 systemctl --user daemon-reload
 systemctl --user enable --now read_cpu.service
 ```
@@ -89,7 +105,7 @@ systemctl --user enable --now read_cpu.service
 
 ```bash
 cd /absolute/path/to/read_cpu
-nohup python3 monitor.py > monitor.out 2>&1 &
+nohup bash run.sh > monitor.out 2>&1 &
 ```
 
 ## 实现说明

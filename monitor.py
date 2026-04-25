@@ -7,7 +7,7 @@ Sampling window:
   - end:   00:05:00 UTC of the next day
 
 Default sampling interval:
-  - 1 second
+  - 100ms
 
 Outputs:
   - logs/YYYY-MM-DD.csv
@@ -21,15 +21,15 @@ The date in the filename is the UTC date of the 00:00:00 boundary. Example:
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import json
 import pathlib
 import signal
 import sys
 import time
+import tempfile
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 
 UTC = dt.timezone.utc
@@ -165,54 +165,63 @@ def ensure_log_paths(log_dir: pathlib.Path, boundary_date: dt.date) -> Tuple[pat
     return log_dir / f"{base}.csv", log_dir / f"{base}.jsonl"
 
 
-def write_csv_header_if_needed(path: pathlib.Path) -> None:
-    if path.exists():
-        return
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "timestamp_utc",
-                "cpu_percent",
-                "mem_used_percent",
-                "mem_total_kb",
-                "mem_available_kb",
-                "mem_used_kb",
-                "swap_total_kb",
-                "swap_free_kb",
-                "swap_used_kb",
-                "swap_used_percent",
-            ]
+CSV_HEADER = [
+    "timestamp_utc",
+    "cpu_percent",
+    "mem_used_percent",
+    "mem_total_kb",
+    "mem_available_kb",
+    "mem_used_kb",
+    "swap_total_kb",
+    "swap_free_kb",
+    "swap_used_kb",
+    "swap_used_percent",
+]
+
+
+def write_text_atomic(path: pathlib.Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = pathlib.Path(tmp.name)
+    tmp_path.replace(path)
+
+
+def render_csv(samples: List[Dict[str, object]]) -> str:
+    lines = [",".join(CSV_HEADER)]
+    for sample in samples:
+        lines.append(
+            ",".join(
+                [
+                    str(sample["timestamp_utc"]),
+                    str(sample["cpu_percent"]),
+                    str(sample["mem_used_percent"]),
+                    str(sample["mem_total_kb"]),
+                    str(sample["mem_available_kb"]),
+                    str(sample["mem_used_kb"]),
+                    str(sample["swap_total_kb"]),
+                    str(sample["swap_free_kb"]),
+                    str(sample["swap_used_kb"]),
+                    str(sample["swap_used_percent"]),
+                ]
+            )
         )
+    return "\n".join(lines) + "\n"
 
 
-def append_sample(csv_path: pathlib.Path, jsonl_path: pathlib.Path, sample: Dict[str, object]) -> None:
-    write_csv_header_if_needed(csv_path)
+def render_jsonl(samples: List[Dict[str, object]]) -> str:
+    return "".join(json.dumps(sample, ensure_ascii=True) + "\n" for sample in samples)
 
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                sample["timestamp_utc"],
-                sample["cpu_percent"],
-                sample["mem_used_percent"],
-                sample["mem_total_kb"],
-                sample["mem_available_kb"],
-                sample["mem_used_kb"],
-                sample["swap_total_kb"],
-                sample["swap_free_kb"],
-                sample["swap_used_kb"],
-                sample["swap_used_percent"],
-            ]
-        )
 
-    with open(jsonl_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(sample, ensure_ascii=True) + "\n")
+def flush_samples(csv_path: pathlib.Path, jsonl_path: pathlib.Path, samples: List[Dict[str, object]]) -> None:
+    write_text_atomic(csv_path, render_csv(samples))
+    write_text_atomic(jsonl_path, render_jsonl(samples))
 
 
 def sample_window(boundary_date: dt.date, interval_seconds: float, log_dir: pathlib.Path) -> None:
     csv_path, jsonl_path = ensure_log_paths(log_dir, boundary_date)
     window_start, window_end = window_for_boundary(boundary_date)
+    samples: List[Dict[str, object]] = []
 
     print(
         f"sampling UTC window for {boundary_date.isoformat()}: "
@@ -226,6 +235,7 @@ def sample_window(boundary_date: dt.date, interval_seconds: float, log_dir: path
     while not STOP:
         now = current_utc()
         if now > window_end:
+            flush_samples(csv_path, jsonl_path, samples)
             print(f"finished window {boundary_date.isoformat()}", flush=True)
             return
 
@@ -248,7 +258,7 @@ def sample_window(boundary_date: dt.date, interval_seconds: float, log_dir: path
             "swap_used_kb": mem.swap_used_kb,
             "swap_used_percent": round(mem.swap_used_percent, 2),
         }
-        append_sample(csv_path, jsonl_path, sample)
+        samples.append(sample)
         prev_cpu = curr_cpu
         next_tick += interval_seconds
 
@@ -289,7 +299,30 @@ def parse_args() -> argparse.Namespace:
         default=str(pathlib.Path(__file__).resolve().parent / "logs"),
         help="Directory for CSV and JSONL output files.",
     )
+    parser.add_argument(
+        "--service-file",
+        default="",
+        help="Write a systemd user service file to this path and exit.",
+    )
     return parser.parse_args()
+
+
+def render_systemd_service(working_dir: pathlib.Path) -> str:
+    python_path = pathlib.Path(sys.executable).resolve()
+    monitor_path = (working_dir / "monitor.py").resolve()
+    return f"""[Unit]
+Description=Daily UTC midnight CPU and memory monitor
+
+[Service]
+Type=simple
+WorkingDirectory={working_dir}
+ExecStart={python_path} {monitor_path}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
 
 
 def main() -> int:
@@ -300,6 +333,11 @@ def main() -> int:
 
     register_signal_handlers()
     log_dir = pathlib.Path(args.log_dir)
+    if args.service_file:
+        service_path = pathlib.Path(args.service_file).expanduser().resolve()
+        write_text_atomic(service_path, render_systemd_service(pathlib.Path(__file__).resolve().parent))
+        print(f"wrote service file: {service_path}")
+        return 0
     run_forever(interval_seconds=args.interval_seconds, log_dir=log_dir)
     return 0
 
