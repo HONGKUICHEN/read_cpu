@@ -1,6 +1,6 @@
 # read_cpu
 
-在每天固定的 `00:00:00 UTC+0` 前 1 分钟到后 5 分钟，实时读取 CPU 和内存使用情况。
+在每天固定的 `00:00:00 UTC+0` 前 1 分钟到后 5 分钟，实时读取 CPU、内存、网络和磁盘状态。
 
 监控窗口固定为：
 
@@ -56,6 +56,20 @@ CSV 和 JSONL 都包含这些字段：
 - `swap_free_kb`
 - `swap_used_kb`
 - `swap_used_percent`
+- `net_rx_bytes`
+- `net_tx_bytes`
+- `net_rx_packets`
+- `net_tx_packets`
+- `net_rx_errors`
+- `net_tx_errors`
+- `net_rx_bytes_per_sec`
+- `net_tx_bytes_per_sec`
+- `net_rx_packets_per_sec`
+- `net_tx_packets_per_sec`
+- `disk_total_bytes`
+- `disk_used_bytes`
+- `disk_free_bytes`
+- `disk_used_percent`
 
 ## 写盘方式
 
@@ -112,4 +126,6 @@ nohup bash run.sh > monitor.out 2>&1 &
 
 - CPU 使用率来自 `/proc/stat`
 - 内存和 swap 使用量来自 `/proc/meminfo`
+- 网络状态来自 `/proc/net/dev`，默认汇总所有非回环网卡
+- 磁盘状态来自根分区 `/` 的 `disk_usage`
 - 不依赖第三方 Python 包，适合 WSL / Linux 直接运行

@@ -25,6 +25,7 @@ import datetime as dt
 import json
 import pathlib
 import signal
+import shutil
 import sys
 import time
 import tempfile
@@ -54,6 +55,24 @@ class MemorySnapshot:
     swap_free_kb: int
     swap_used_kb: int
     swap_used_percent: float
+
+
+@dataclass
+class NetworkCounters:
+    rx_bytes: int
+    tx_bytes: int
+    rx_packets: int
+    tx_packets: int
+    rx_errors: int
+    tx_errors: int
+
+
+@dataclass
+class DiskSnapshot:
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+    used_percent: float
 
 
 STOP = False
@@ -125,6 +144,68 @@ def read_memory_snapshot() -> MemorySnapshot:
     )
 
 
+def read_network_counters() -> NetworkCounters:
+    rx_bytes = tx_bytes = 0
+    rx_packets = tx_packets = 0
+    rx_errors = tx_errors = 0
+
+    with open("/proc/net/dev", "r", encoding="utf-8") as f:
+        lines = f.readlines()[2:]
+
+    for raw in lines:
+        if ":" not in raw:
+            continue
+        iface, rest = raw.split(":", 1)
+        name = iface.strip()
+        if name == "lo":
+            continue
+        fields = rest.split()
+        if len(fields) < 16:
+            continue
+        rx_bytes += int(fields[0])
+        rx_packets += int(fields[1])
+        rx_errors += int(fields[2])
+        tx_bytes += int(fields[8])
+        tx_packets += int(fields[9])
+        tx_errors += int(fields[10])
+
+    return NetworkCounters(
+        rx_bytes=rx_bytes,
+        tx_bytes=tx_bytes,
+        rx_packets=rx_packets,
+        tx_packets=tx_packets,
+        rx_errors=rx_errors,
+        tx_errors=tx_errors,
+    )
+
+
+def network_rates(prev: NetworkCounters, curr: NetworkCounters, interval_seconds: float) -> Dict[str, float]:
+    if interval_seconds <= 0:
+        return {
+            "net_rx_bytes_per_sec": 0.0,
+            "net_tx_bytes_per_sec": 0.0,
+            "net_rx_packets_per_sec": 0.0,
+            "net_tx_packets_per_sec": 0.0,
+        }
+    return {
+        "net_rx_bytes_per_sec": max(0.0, (curr.rx_bytes - prev.rx_bytes) / interval_seconds),
+        "net_tx_bytes_per_sec": max(0.0, (curr.tx_bytes - prev.tx_bytes) / interval_seconds),
+        "net_rx_packets_per_sec": max(0.0, (curr.rx_packets - prev.rx_packets) / interval_seconds),
+        "net_tx_packets_per_sec": max(0.0, (curr.tx_packets - prev.tx_packets) / interval_seconds),
+    }
+
+
+def read_disk_snapshot(path: str = "/") -> DiskSnapshot:
+    usage = shutil.disk_usage(path)
+    used_percent = 0.0 if usage.total == 0 else usage.used * 100.0 / usage.total
+    return DiskSnapshot(
+        total_bytes=usage.total,
+        used_bytes=usage.used,
+        free_bytes=usage.free,
+        used_percent=used_percent,
+    )
+
+
 def current_utc() -> dt.datetime:
     return dt.datetime.now(UTC)
 
@@ -176,6 +257,20 @@ CSV_HEADER = [
     "swap_free_kb",
     "swap_used_kb",
     "swap_used_percent",
+    "net_rx_bytes",
+    "net_tx_bytes",
+    "net_rx_packets",
+    "net_tx_packets",
+    "net_rx_errors",
+    "net_tx_errors",
+    "net_rx_bytes_per_sec",
+    "net_tx_bytes_per_sec",
+    "net_rx_packets_per_sec",
+    "net_tx_packets_per_sec",
+    "disk_total_bytes",
+    "disk_used_bytes",
+    "disk_free_bytes",
+    "disk_used_percent",
 ]
 
 
@@ -203,6 +298,20 @@ def render_csv(samples: List[Dict[str, object]]) -> str:
                     str(sample["swap_free_kb"]),
                     str(sample["swap_used_kb"]),
                     str(sample["swap_used_percent"]),
+                    str(sample["net_rx_bytes"]),
+                    str(sample["net_tx_bytes"]),
+                    str(sample["net_rx_packets"]),
+                    str(sample["net_tx_packets"]),
+                    str(sample["net_rx_errors"]),
+                    str(sample["net_tx_errors"]),
+                    str(sample["net_rx_bytes_per_sec"]),
+                    str(sample["net_tx_bytes_per_sec"]),
+                    str(sample["net_rx_packets_per_sec"]),
+                    str(sample["net_tx_packets_per_sec"]),
+                    str(sample["disk_total_bytes"]),
+                    str(sample["disk_used_bytes"]),
+                    str(sample["disk_free_bytes"]),
+                    str(sample["disk_used_percent"]),
                 ]
             )
         )
@@ -230,6 +339,7 @@ def sample_window(boundary_date: dt.date, interval_seconds: float, log_dir: path
     )
 
     prev_cpu = read_cpu_times()
+    prev_net = read_network_counters()
     next_tick = time.time()
 
     while not STOP:
@@ -245,7 +355,10 @@ def sample_window(boundary_date: dt.date, interval_seconds: float, log_dir: path
 
         now = current_utc()
         curr_cpu = read_cpu_times()
+        curr_net = read_network_counters()
         mem = read_memory_snapshot()
+        disk = read_disk_snapshot("/")
+        net_rates = network_rates(prev_net, curr_net, interval_seconds)
         sample = {
             "timestamp_utc": now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "cpu_percent": round(cpu_percent(prev_cpu, curr_cpu), 2),
@@ -257,9 +370,24 @@ def sample_window(boundary_date: dt.date, interval_seconds: float, log_dir: path
             "swap_free_kb": mem.swap_free_kb,
             "swap_used_kb": mem.swap_used_kb,
             "swap_used_percent": round(mem.swap_used_percent, 2),
+            "net_rx_bytes": curr_net.rx_bytes,
+            "net_tx_bytes": curr_net.tx_bytes,
+            "net_rx_packets": curr_net.rx_packets,
+            "net_tx_packets": curr_net.tx_packets,
+            "net_rx_errors": curr_net.rx_errors,
+            "net_tx_errors": curr_net.tx_errors,
+            "net_rx_bytes_per_sec": round(net_rates["net_rx_bytes_per_sec"], 2),
+            "net_tx_bytes_per_sec": round(net_rates["net_tx_bytes_per_sec"], 2),
+            "net_rx_packets_per_sec": round(net_rates["net_rx_packets_per_sec"], 2),
+            "net_tx_packets_per_sec": round(net_rates["net_tx_packets_per_sec"], 2),
+            "disk_total_bytes": disk.total_bytes,
+            "disk_used_bytes": disk.used_bytes,
+            "disk_free_bytes": disk.free_bytes,
+            "disk_used_percent": round(disk.used_percent, 2),
         }
         samples.append(sample)
         prev_cpu = curr_cpu
+        prev_net = curr_net
         next_tick += interval_seconds
 
 
@@ -286,13 +414,13 @@ def run_forever(interval_seconds: float, log_dir: pathlib.Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read CPU and memory usage from 23:59 UTC to 00:05 UTC every day."
+        description="Read CPU, memory, network, and disk status from 23:59 UTC to 00:05 UTC every day."
     )
     parser.add_argument(
         "--interval-seconds",
         type=float,
         default=DEFAULT_INTERVAL_SECONDS,
-        help="Sampling interval in seconds. Default: 1.0",
+        help="Sampling interval in seconds. Default: 0.1",
     )
     parser.add_argument(
         "--log-dir",
