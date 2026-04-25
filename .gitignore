@@ -1,4 +1,5 @@
 logs/
+monitor.out
+read_cpu
 __pycache__/
 *.pyc
-monitor.out

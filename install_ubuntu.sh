@@ -7,14 +7,18 @@ SERVICE_FILE="${SERVICE_DIR}/read_cpu.service"
 
 echo ">>> install dependencies"
 sudo apt-get update
-sudo apt-get install -y python3
+sudo apt-get install -y golang-go
 
 echo ">>> prepare directories"
 mkdir -p "${SERVICE_DIR}"
 mkdir -p "${PROJECT_DIR}/logs"
 
+echo ">>> build binary"
+cd "${PROJECT_DIR}"
+go build -o "${PROJECT_DIR}/read_cpu" .
+
 echo ">>> generate systemd user service"
-python3 "${PROJECT_DIR}/monitor.py" --service-file "${SERVICE_FILE}"
+"${PROJECT_DIR}/read_cpu" --service-file "${SERVICE_FILE}"
 
 echo ">>> enable service"
 systemctl --user daemon-reload
