@@ -27,20 +27,33 @@
 
 ```bash
 cd read_cpu
-python3 monitor.py
+bash run.sh
 ```
 
 自定义采样间隔：
 
 ```bash
-python3 monitor.py --interval-seconds 2
+bash run.sh --interval 2s
 ```
 
 自定义日志目录：
 
 ```bash
-python3 monitor.py --log-dir /path/to/output
+bash run.sh --log-dir /path/to/output
 ```
+
+立即测试采样并在结束后一次性写日志：
+
+```bash
+bash run.sh --sample-now 3s --interval 100ms
+```
+
+这个模式适合白天随时验证：
+
+- 不等待 UTC 正式窗口
+- 立刻开始采样
+- 持续指定时长后一次性写文件
+- 输出文件名会带 `manual` 标记
 
 ## 输出字段
 
@@ -110,7 +123,7 @@ bash run.sh
 自动生成：
 
 ```bash
-python3 monitor.py --service-file ~/.config/systemd/user/read_cpu.service
+bash run.sh --service-file ~/.config/systemd/user/read_cpu.service
 systemctl --user daemon-reload
 systemctl --user enable --now read_cpu.service
 ```
@@ -124,8 +137,9 @@ nohup bash run.sh > monitor.out 2>&1 &
 
 ## 实现说明
 
+- Go 实现，不依赖第三方 Go 包
 - CPU 使用率来自 `/proc/stat`
 - 内存和 swap 使用量来自 `/proc/meminfo`
 - 网络状态来自 `/proc/net/dev`，默认汇总所有非回环网卡
-- 磁盘状态来自根分区 `/` 的 `disk_usage`
-- 不依赖第三方 Python 包，适合 WSL / Linux 直接运行
+- 磁盘状态来自根分区 `/` 的 `statfs`
+- 适合 WSL / Linux 直接运行
