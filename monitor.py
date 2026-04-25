@@ -33,7 +33,7 @@ from typing import Dict, Tuple
 
 
 UTC = dt.timezone.utc
-DEFAULT_INTERVAL_SECONDS = 1.0
+DEFAULT_INTERVAL_SECONDS = 0.1
 WINDOW_START = dt.time(hour=23, minute=59, second=0)
 WINDOW_END = dt.time(hour=0, minute=5, second=0)
 
